@@ -58,9 +58,21 @@ Value* CminusfBuilder::visit(ASTNum &node) {
 }
 
 Value* CminusfBuilder::visit(ASTVarDeclaration &node) {
-    // TODO: This function is empty now.
-    // Add some code here.
-    return nullptr;
+    Type *var_type;  
+    //复制下方
+    if (node.type == TYPE_INT) {  
+        var_type = INT32_T;  
+    } else if (node.type == TYPE_FLOAT) {  
+        var_type = FLOAT_T;  
+    } else {  
+        // 处理其他类型?  
+        return nullptr;  
+    }
+    //printf("Test print\n");
+    auto *alloca_inst = builder->create_alloca(var_type);  
+    scope.push(node.id, alloca_inst);
+
+    return alloca_inst;
 }
 
 Value* CminusfBuilder::visit(ASTFunDeclaration &node) {
@@ -126,22 +138,29 @@ Value* CminusfBuilder::visit(ASTParam &node) {
     return nullptr;
 }
 
-Value* CminusfBuilder::visit(ASTCompoundStmt &node) {
-    // TODO: This function is not complete.
-    // You may need to add some code here
-    // to deal with complex statements. 
-    
-    for (auto &decl : node.local_declarations) {
-        decl->accept(*this);
-    }
-
-    for (auto &stmt : node.statement_list) {
-        stmt->accept(*this);
-        if (builder->get_insert_block()->get_terminator() == nullptr)
-            break;
-    }
-    return nullptr;
-}
+Value* CminusfBuilder::visit(ASTCompoundStmt &node) {  
+    printf("Doing--ASTCompoundStmt \n");
+    // 进入新的作用域  
+    scope.enter();  
+    // 处理局部声明  
+    for (auto &decl : node.local_declarations) {  
+        decl->accept(*this);  
+    } 
+    //printf("Test Print for ASTCompoundStmt") ;
+    //
+    // 处理语句列表  
+    for (auto &stmt : node.statement_list) {  
+        stmt->accept(*this);  
+        // 如果当前基本块已结束，退出处理  
+        if (builder->get_insert_block()->get_terminator() != nullptr) {  
+            break;  
+        }  
+    }  
+    // 退出作用域  
+    scope.exit();  
+    printf("Ending--ASTCompoundStmt \n");
+    return nullptr;  
+} 
 
 Value* CminusfBuilder::visit(ASTExpressionStmt &node) {
     if (node.expression != nullptr) {
@@ -189,12 +208,45 @@ Value* CminusfBuilder::visit(ASTSelectionStmt &node) {
     return nullptr;
 }
 
-Value* CminusfBuilder::visit(ASTIterationStmt &node) {
-    // TODO: This function is empty now.
-    // Add some code here.
-    return nullptr;
-}
+Value* CminusfBuilder::visit(ASTIterationStmt &node) {  
+    // 创建基本块用于条件检查和循环体  
+    auto *loopCondBB = BasicBlock::create(module.get(), "loop_condition", context.func);  
+    auto *loopBodyBB = BasicBlock::create(module.get(), "loop_body", context.func);  
+    auto *afterLoopBB = BasicBlock::create(module.get(), "after_loop", context.func);  
 
+    // 从入口块跳转到循环条件检查  
+    builder->create_br(loopCondBB);  
+    
+    // 设置插入点到条件检查基本块  
+    builder->set_insert_point(loopCondBB);  
+    
+    // 获取条件值  
+    auto *cond_val = node.expression->accept(*this);  
+    Value *cond = nullptr;  
+
+    // 根据条件的类型生成正确的比较代码  
+    if (cond_val->get_type()->is_integer_type()) {  
+        cond = builder->create_icmp_ne(cond_val, CONST_INT(0));  
+    } else {  
+        cond = builder->create_fcmp_ne(cond_val, CONST_FP(0.));  
+    }  
+
+    // 根据条件的值决定跳转  
+    builder->create_cond_br(cond, loopBodyBB, afterLoopBB);  
+    
+    // 设置插入点到循环体基本块  
+    builder->set_insert_point(loopBodyBB);  
+    
+    // 执行循环体  
+    node.statement->accept(*this);  
+    
+    // 无论循环体是否终止，都返回到条件检查  
+    builder->create_br(loopCondBB);  
+
+    // 设置插入点到循环结束基本块  
+    builder->set_insert_point(afterLoopBB);  
+    return nullptr;  
+}  
 Value* CminusfBuilder::visit(ASTReturnStmt &node) {
     if (node.expression == nullptr) {
         builder->create_void_ret();
@@ -301,9 +353,33 @@ Value* CminusfBuilder::visit(ASTAssignExpression &node) {
     return expr_result;
 }
 
-Value* CminusfBuilder::visit(ASTSimpleExpression &node) {
-    // TODO: This function is empty now.
-    // Add some code here.
+Value* CminusfBuilder::visit(ASTSimpleExpression &node) {  
+    std::cout << "Visiting ASTSimpleExpression with operation: " << node.op << std::endl;  
+
+    // 计算左侧加法表达式的值  
+    Value* left_value = node.additive_expression_l->accept(*this);  
+    
+    // 计算右侧加法表达式的值  
+    Value* right_value = node.additive_expression_r->accept(*this);  
+
+    // 检查操作类型并生成对应的 IR 代码  
+    switch (node.op) {  
+        case RelOp::OP_LT: // 小于  
+            return builder->create_icmp_lt(left_value, right_value);  
+        case RelOp::OP_LE: // 小于等于  
+            return builder->create_icmp_le(left_value, right_value);  
+        case RelOp::OP_GT: // 大于  
+            return builder->create_icmp_gt(left_value, right_value);  
+        case RelOp::OP_GE: // 大于等于  
+            return builder->create_icmp_ge(left_value, right_value);  
+        case RelOp::OP_EQ: // 等于  
+            return builder->create_icmp_eq(left_value, right_value);  
+        case RelOp::OP_NEQ: // 不等于  
+            return builder->create_icmp_ne(left_value, right_value);  
+        default:  
+            throw std::runtime_error("Unknown relational operator!");  
+    }  
+
     return nullptr;
 }
 
